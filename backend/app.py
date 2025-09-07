@@ -14,12 +14,24 @@ CORS(app)
 
 # Database connection
 def get_db_connection():
-    return mysql.connector.connect(
-        host=os.getenv('DB_HOST'),
-        user=os.getenv('DB_USER'),
-        password=os.getenv('DB_PASSWORD'),
-        database=os.getenv('DB_NAME')
-    )
+    # Use Vercel's environment variables for database connection
+    db_config = {
+        'host': os.getenv('DB_HOST', 'localhost'),
+        'user': os.getenv('DB_USER', 'root'),
+        'password': os.getenv('DB_PASSWORD', ''),
+        'database': os.getenv('DB_NAME', 'music_recommender'),
+        'port': os.getenv('DB_PORT', 3306)
+    }
+    
+    # For Vercel, we might need to use a different approach
+    # If no database is available, we'll use a fallback method
+    try:
+        return mysql.connector.connect(**db_config)
+    except Exception as e:
+        print(f"Database connection failed: {e}")
+        # Return a mock connection object that will allow the app to run
+        # but will use alternative data sources
+        return None
 
 # Initialize Spotify client and recommendation engine
 spotify_client = SpotifyClient()
@@ -45,30 +57,48 @@ def get_recommendations():
     # Get recommendations
     recommendations = recommender.get_recommendations(track_features)
     
-    # Store search in database
+    # Try to store search in database if available
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO user_searches (track_id) VALUES (%s)",
-        (track_id,)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO user_searches (track_id) VALUES (%s)",
+                (track_id,)
+            )
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"Failed to store search: {e}")
     
     return jsonify(recommendations)
 
 @app.route('/api/analysis', methods=['GET'])
 def get_analysis():
-    # Get data for visualization
+    # Try to get data from database
     conn = get_db_connection()
-    df = pd.read_sql("SELECT * FROM tracks", conn)
-    conn.close()
+    if conn:
+        try:
+            df = pd.read_sql("SELECT * FROM tracks", conn)
+            conn.close()
+            
+            # Generate analysis visualizations
+            analysis_data = recommender.generate_visualizations(df)
+            return jsonify(analysis_data)
+        except Exception as e:
+            print(f"Database query failed: {e}")
     
-    # Generate analysis visualizations
-    analysis_data = recommender.generate_visualizations(df)
-    
-    return jsonify(analysis_data)
+    # Fallback: return sample data if database is not available
+    return jsonify({
+        "message": "Database not available, using sample data",
+        "stats": {
+            "danceability": {"mean": 0.65, "std": 0.15},
+            "energy": {"mean": 0.70, "std": 0.18},
+            "valence": {"mean": 0.60, "std": 0.20}
+        }
+    })
 
+# This is needed for Vercel to recognize the app
 if __name__ == '__main__':
     app.run(debug=True)
